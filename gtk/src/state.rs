@@ -63,6 +63,8 @@ pub(crate) struct Components {
 }
 
 impl State {
+    /// Creates the state that manages all state used by the event loop attached to the main
+    /// context.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         sender: Sender<FirmwareEvent>,
@@ -333,13 +335,12 @@ impl State {
                 }
             }
         } else {
-            eprintln!(
-                "attempted to update firmware for a device which did not have updated firmware"
-            );
+            error!("attempted to update firmware for a device which did not have updated firmware");
         }
     }
 }
 
+/// Reveals a device's changelog, and generates that changelog if it hasn't been generated yet.
 fn reveal<F: FnMut() -> gtk::Container>(
     revealer: &gtk::Revealer,
     sender: &glib::Sender<Event>,

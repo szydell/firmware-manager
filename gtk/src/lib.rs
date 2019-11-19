@@ -1,5 +1,19 @@
+#![deny(missing_docs)]
+
+//! # Firmware Manager GTK
+//!
+//! This crate is a frontend for the firmware manager to be used with GTK-based desktop
+//! environments. Only GTK-specific application logic is contained here. All application logic is
+//! delegated to the core which this wraps.
+//!
+//! See the [application crate] for an example of how this can be integrated into an application.
+//!
+//! [application crate]: ./main.rs
+
 #[macro_use]
 extern crate cascade;
+#[macro_use]
+extern crate log;
 #[macro_use]
 extern crate shrinkwraprs;
 
@@ -18,9 +32,14 @@ use std::{
     collections::HashSet,
     error::Error as _,
     process::Command,
-    sync::mpsc::{channel, Receiver, Sender, TryRecvError},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc::{channel, Receiver, Sender, TryRecvError},
+        Arc,
+    },
     thread::{self, JoinHandle},
 };
+use yansi::Paint;
 
 /// Activates, or deactivates, the movement of progress bars.
 /// TODO: As soon as glib::WeakRef supports Eq/Hash derives, use WeakRef instead.
@@ -35,8 +54,11 @@ pub struct FirmwareWidget {
     container:  gtk::Container,
     sender:     Sender<FirmwareEvent>,
     background: Option<JoinHandle<()>>,
+    is_admin:   bool,
 }
 
+/// An event which the GTK UI may propagate to the event loop in the main context.
+#[derive(Debug)]
 enum UiEvent {
     /// It was requested to hide the upgrade stack of an entity
     HideStack(Entity),
@@ -48,6 +70,11 @@ enum UiEvent {
     Update(Entity),
 }
 
+/// An event that requests for the UI to perform a specific action.
+///
+/// This are sent to the glib channel receiver attached to the main context.
+/// All events are managed in a central location with shared state.
+#[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 enum Event {
     Firmware(FirmwareSignal),
@@ -73,6 +100,7 @@ impl FirmwareWidget {
         let info_bar_label = cascade! {
             gtk::Label::new(None);
             ..set_line_wrap(true);
+            ..set_selectable(true);
             ..show();
         };
 
@@ -104,9 +132,19 @@ impl FirmwareWidget {
             gtk::Stack::new();
             ..add(view_empty.as_ref());
             ..add(view_devices.as_ref());
-            ..set_visible_child(view_empty.as_ref());
             ..set_no_show_all(true);
         };
+
+        let is_admin = user_is_admin();
+
+        if is_admin {
+            stack.set_visible_child(view_empty.as_ref());
+        } else {
+            let view = PermissionView::new();
+            stack.add(view.as_ref());
+            stack.set_visible_child(view.as_ref());
+            stack.show();
+        }
 
         let container = {
             let sender = sender.clone();
@@ -154,6 +192,7 @@ impl FirmwareWidget {
         Self {
             background: Some(background),
             container: container.upcast::<gtk::Container>(),
+            is_admin,
             sender,
         }
     }
@@ -163,7 +202,11 @@ impl FirmwareWidget {
     /// This clears any devices that have been previously discovered, and repopulates the
     /// devices view with new devices, if found. If devices are not found, the empty view
     /// will be displayed instead.
-    pub fn scan(&self) { let _ = self.sender.send(FirmwareEvent::Scan); }
+    pub fn scan(&self) {
+        if self.is_admin {
+            let _ = self.sender.send(FirmwareEvent::Scan);
+        }
+    }
 
     /// Returns the primary container widget of this structure.
     pub fn container(&self) -> &gtk::Container { self.container.upcast_ref::<gtk::Container>() }
@@ -176,11 +219,27 @@ impl FirmwareWidget {
     fn attach_main_event_loop(mut state: State, receiver: glib::Receiver<Event>) {
         use crate::{Event::*, FirmwareSignal::*, UiEvent::*};
         let mut last_active_revealer = None;
+
+        // TODO: Use a better approach than an Arc<AtomicBool>
+        let firmware_flashing = Arc::new(AtomicBool::new(false));
+        let firmware_flashing_ = firmware_flashing.clone();
+        let tx_udev = state.sender.clone();
+        let usb_trigger = usb_hotplug_event_loop(move || {
+            if !firmware_flashing_.load(Ordering::SeqCst) {
+                let _ = tx_udev.send(FirmwareEvent::Scan);
+            }
+        });
+
         receiver.attach(None, move |event| {
+            // Capture the USB trigger in the lifetime of the attached receiver.
+            let _ = usb_trigger;
+
+            trace!("received UI event: {:#?}", Paint::yellow(&event));
             match event {
                 // When a device begins flashing, we can begin moving the progress bar based on
                 // its duration.
                 Firmware(DeviceFlashing(entity)) => {
+                    firmware_flashing.store(true, Ordering::SeqCst);
                     let widget = &state.components.device_widgets[entity];
                     let message =
                         if state.entities.is_system(entity) { "Scheduling" } else { "Flashing" };
@@ -190,6 +249,7 @@ impl FirmwareWidget {
                 }
                 // An event that occurs when firmware has successfully updated.
                 Firmware(DeviceUpdated(entity)) => {
+                    firmware_flashing.store(false, Ordering::SeqCst);
                     let latest = state.components.latest.remove(entity);
                     state.device_updated(entity, latest.expect("updated device without version"))
                 }
@@ -214,6 +274,7 @@ impl FirmwareWidget {
                 }
                 // An error occurred in the background thread, which we shall display in the UI.
                 Firmware(Error(entity, why)) => {
+                    firmware_flashing.store(false, Ordering::SeqCst);
                     // Convert the error and its causes into a string.
                     let mut error_message = format!("{}", why);
                     let mut cause = why.source();
@@ -222,7 +283,7 @@ impl FirmwareWidget {
                         cause = error.source();
                     }
 
-                    eprintln!("firmware widget error: {}", error_message);
+                    error!("firmware widget error: {}", error_message);
 
                     state.widgets.info_bar.set_visible(true);
                     state.widgets.info_bar_label.set_text(error_message.as_str());
@@ -251,7 +312,7 @@ impl FirmwareWidget {
                 }
                 // Signal is received when scanning has completed.
                 Firmware(ScanningComplete) => {
-                    eprintln!("scanning for firmware is complete");
+                    info!("scanning for firmware is complete");
                     if state.entities.entities.is_empty() {
                         state.widgets.stack.show();
                         state.widgets.view_empty.show_all();
@@ -294,6 +355,7 @@ impl FirmwareWidget {
                 }
                 // This is the last message sent before the background thread exits.
                 Stop => {
+                    trace!("glib channel receiver closed");
                     return glib::Continue(false);
                 }
             }
@@ -312,9 +374,8 @@ impl FirmwareWidget {
                 let _ = sender.send(Event::Firmware(event));
             });
 
+            info!("firmware manager event loop stopped");
             let _ = sender.send(Event::Stop);
-
-            eprintln!("stopping firmware client connection");
         })
     }
 
@@ -344,6 +405,7 @@ impl FirmwareWidget {
                     }
                     Err(TryRecvError::Empty) => break,
                     Err(TryRecvError::Disconnected) => {
+                        trace!("disconnecting progress event loop");
                         return gtk::Continue(false);
                     }
                 }
@@ -369,6 +431,7 @@ impl Default for FirmwareWidget {
 
 impl Drop for FirmwareWidget {
     fn drop(&mut self) {
+        trace!("firmware widget dropped: sending stop signal to background thread");
         let _ = self.sender.send(FirmwareEvent::Stop);
 
         if let Some(handle) = self.background.take() {
@@ -377,8 +440,12 @@ impl Drop for FirmwareWidget {
     }
 }
 
+/// Convenience function for rebooting the system.
+///
+/// Currently only supports rebooting via `systemctl`. Feature flags could use other init system
+/// facilities to do the same.
 fn reboot() {
     if let Err(why) = Command::new("systemctl").arg("reboot").status() {
-        eprintln!("failed to reboot: {}", why);
+        error!("failed to reboot: {}", why);
     }
 }

@@ -18,6 +18,10 @@ use firmware_manager::{fwupd_scan, fwupd_updates, FwupdClient};
 use firmware_manager::{s76_firmware_is_active, s76_scan, System76Client};
 
 fn main() {
+    if !firmware_manager::user_is_admin() {
+        return;
+    }
+
     #[cfg(feature = "system76")]
     let s76 = get_client("system76", s76_firmware_is_active, System76Client::new);
 
@@ -37,9 +41,8 @@ fn main() {
 
     let event_handler = |event: FirmwareSignal| match event {
         #[cfg(feature = "fwupd")]
-        FirmwareSignal::Fwupd(FwupdSignal { info, .. }) => {
-            if info.latest.as_ref().map_or(false, |latest| latest.as_ref() != info.current.as_ref())
-            {
+        FirmwareSignal::Fwupd(FwupdSignal { upgradeable, .. }) => {
+            if upgradeable {
                 notify();
             }
         }

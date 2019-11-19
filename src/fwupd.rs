@@ -2,20 +2,24 @@
 
 use crate::{FirmwareInfo, FirmwareSignal};
 use fwupd_dbus::{Client as FwupdClient, Device as FwupdDevice, Release as FwupdRelease};
-use std::{error::Error as _, io, process::Command};
+use std::{cmp::Ordering, error::Error as _, io, process::Command};
 
 /// A signal sent when a fwupd-compatible device has been discovered.
 #[derive(Debug)]
 pub struct FwupdSignal {
-    pub info:        FirmwareInfo,
-    pub device:      FwupdDevice,
+    /// Generic information about the firmware.
+    pub info: FirmwareInfo,
+    /// Information specific to fwupd devices.
+    pub device: FwupdDevice,
+    /// Tracks whether the firmware is upgradeable or not.
     pub upgradeable: bool,
-    pub releases:    Vec<FwupdRelease>,
+    /// All releases that were found for the firmware.
+    pub releases: Vec<FwupdRelease>,
 }
 
 /// Scan for supported devices from the fwupd DBus daemon.
 pub fn fwupd_scan<F: Fn(FirmwareSignal)>(fwupd: &FwupdClient, sender: F) {
-    eprintln!("scanning fwupd devices");
+    info!("scanning fwupd devices");
 
     let devices = match fwupd.devices() {
         Ok(devices) => devices,
@@ -27,31 +31,37 @@ pub fn fwupd_scan<F: Fn(FirmwareSignal)>(fwupd: &FwupdClient, sender: F) {
 
     for device in devices {
         if device.is_supported() {
-            if let Ok(mut releases) = fwupd.releases(&device) {
-                crate::sort_versions(&mut releases);
+            match fwupd.releases(&device) {
+                Ok(mut releases) => {
+                    crate::sort_versions(&mut releases);
 
-                let latest = releases.iter().last().expect("no releases");
-                let upgradeable = latest.version != device.version;
+                    let latest = releases.iter().last().expect("no releases");
+                    let upgradeable = is_newer(&device.version, &latest.version);
 
-                sender(FirmwareSignal::Fwupd(FwupdSignal {
-                    info: FirmwareInfo {
-                        name:             [&device.vendor, " ", &device.name].concat().into(),
-                        current:          device.version.clone(),
-                        latest:           Some(latest.version.clone()),
-                        install_duration: latest.install_duration,
-                    },
-                    device,
-                    upgradeable,
-                    releases,
-                }));
+                    sender(FirmwareSignal::Fwupd(FwupdSignal {
+                        info: FirmwareInfo {
+                            name:             [&device.vendor, " ", &device.name].concat().into(),
+                            current:          device.version.clone(),
+                            latest:           Some(latest.version.clone()),
+                            install_duration: latest.install_duration,
+                        },
+                        device,
+                        upgradeable,
+                        releases,
+                    }));
+                }
+                Err(why) => {
+                    error!(
+                        "failure to get fwupd releases for {}: {}",
+                        device.name,
+                        super::format_error(why)
+                    );
+                }
             }
         }
     }
-}
 
-#[cfg(feature = "fwupd")]
-pub fn fwupdmgr_refresh() -> io::Result<()> {
-    Command::new("fwupdmgr").arg("refresh").status().map(|_| ())
+    info!("fwupd scanning complete");
 }
 
 /// Update the fwupd remotes
@@ -59,34 +69,29 @@ pub fn fwupd_updates(
     client: &FwupdClient,
     http: &reqwest::Client,
 ) -> Result<(), fwupd_dbus::Error> {
-    use std::time::Duration;
-
     const SECONDS_IN_DAY: u64 = 60 * 60 * 24;
 
-    // NOTE: This attribute is required due to a clippy bug.
-    #[allow(clippy::identity_conversion)]
-    for remote in client.remotes()? {
-        if !remote.enabled {
-            continue;
+    if crate::timestamp::exceeded(SECONDS_IN_DAY).ok().unwrap_or(true) {
+        info!("refreshing remotes");
+
+        if let Err(why) = crate::timestamp::refresh() {
+            error!("failed to update timestamp: {}", why);
         }
 
-        if let fwupd_dbus::RemoteKind::Download = remote.kind {
-            let update = remote
-                .time_since_last_update()
-                .map_or(true, |since| since > Duration::from_secs(14 * SECONDS_IN_DAY));
+        // NOTE: This attribute is required due to a clippy bug.
+        #[allow(clippy::identity_conversion)]
+        for remote in client.remotes()? {
+            if !remote.enabled {
+                continue;
+            }
 
-            if update {
-                eprintln!("Updating {:?} metadata from {:?}", remote.remote_id, remote.uri);
+            if let fwupd_dbus::RemoteKind::Download = remote.kind {
+                info!("Updating {:?} metadata from {:?}", remote.remote_id, remote.uri);
                 if let Err(why) = remote.update_metadata(client, http) {
-                    let mut error_message = format!("{}", why);
-                    let mut cause = why.source();
-                    while let Some(error) = cause {
-                        error_message.push_str(format!(": {}", error).as_str());
-                        cause = error.source();
-                    }
-                    eprintln!(
+                    error!(
                         "failed to fetch updates from {}: {:?}",
-                        remote.filename_cache, error_message
+                        remote.filename_cache,
+                        super::format_error(why)
                     );
                 }
             }
@@ -94,4 +99,20 @@ pub fn fwupd_updates(
     }
 
     Ok(())
+}
+
+// Returns `true` if the `latest` string is a newer version than the `current` string.
+fn is_newer(current: &str, latest: &str) -> bool {
+    human_sort::compare(current, latest) == Ordering::Less
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    pub fn is_newer() {
+        assert!(super::is_newer("0.2.8", "0.2.11"));
+        assert!(!super::is_newer("0.2.11", "0.2.8"));
+        assert!(super::is_newer("0.2.7", "0.2.8"));
+        assert!(!super::is_newer("0.2.8", "0.2.7"));
+    }
 }

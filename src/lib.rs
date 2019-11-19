@@ -1,15 +1,29 @@
+#![deny(missing_docs)]
+
+//! # Firmware Manager Core
+//!
+//! The firmware manager core manages all firmware tasks in an event loop, and provides a handful of
+//! useful capabilities that are useful to frontends of the firmware manager.
+
 #[macro_use]
 extern crate err_derive;
-
+#[macro_use]
+extern crate log;
 #[macro_use]
 extern crate shrinkwraprs;
 
+mod cache;
+mod timestamp;
+mod udev;
+mod users;
 mod version_sorting;
 
 #[cfg(feature = "fwupd")]
 mod fwupd;
 #[cfg(feature = "system76")]
 mod system76;
+
+pub use self::users::user_is_admin;
 
 #[cfg(feature = "fwupd")]
 pub use fwupd_dbus::{
@@ -30,9 +44,9 @@ pub use self::system76::*;
 #[cfg(feature = "system76")]
 pub use system76_firmware_daemon::Client as System76Client;
 
-pub use slotmap::DefaultKey as Entity;
-
+pub use self::udev::usb_hotplug_event_loop;
 use self::version_sorting::sort_versions;
+pub use slotmap::DefaultKey as Entity;
 use slotmap::{SlotMap, SparseSecondaryMap};
 use std::{
     io,
@@ -40,11 +54,14 @@ use std::{
     sync::{mpsc::Receiver, Arc},
 };
 
+/// Errors that may occur in the firmware manager core.
 #[derive(Debug, Error)]
 pub enum Error {
+    /// Errors specific to fwupd devices.
     #[cfg(feature = "fwupd")]
     #[error(display = "error in fwupd client")]
     Fwupd(#[error(cause)] fwupd_dbus::Error),
+    /// Errors specific to system76 devices.
     #[cfg(feature = "system76")]
     #[error(display = "error in system76-firmware client")]
     System76(#[error(cause)] System76Error),
@@ -94,10 +111,15 @@ pub struct FirmwareInfo {
     /// The latest version of firmware for this device.
     pub latest: Option<Box<str>>,
 
-    // The time required for this firmware to be flashed, in seconds.
+    /// The time required for this firmware to be flashed, in seconds.
     pub install_duration: u32,
 }
 
+/// A collection of all firmware device entities that a frontend is managing.
+///
+/// This only contains the entity keys, and whether that entity is system firmware or not.
+/// The frontend is responsible for creating secondary maps that will store data specific to
+/// the entities contained within this map.
 #[derive(Debug, Default, Shrinkwrap)]
 pub struct Entities {
     /// The primary storage to record all device entities.
@@ -124,6 +146,11 @@ impl Entities {
     pub fn is_system(&self, entity: Entity) -> bool { self.system.contains_key(entity) }
 }
 
+/// Signals that the firmware manager core will send to a frontend.
+///
+/// This will keep a frontend informed on the current progress of an action, or events which have
+/// been triggered. Entity keys are assigned with most types of events to associate the events with
+/// the firmware devices which initiated the event.
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum FirmwareSignal {
@@ -174,20 +201,22 @@ pub fn event_loop<F: Fn(FirmwareSignal)>(receiver: Receiver<FirmwareEvent>, send
     let s76 = get_client("system76", s76_firmware_is_active, System76Client::new);
 
     #[cfg(feature = "fwupd")]
-    let fwupd = get_client::<_, _, fwupd_dbus::Error>(
-        "fwupd",
-        || true,
-        || {
+    let fwupd = {
+        // Use Ping() to wake up fwupd, and to check if it exists.
+        let fwupd_connect = || {
             let client = FwupdClient::new()?;
             client.ping()?;
             Ok(client)
-        },
-    );
+        };
+
+        get_client::<_, _, fwupd_dbus::Error>("fwupd", || true, fwupd_connect)
+    };
 
     #[cfg(feature = "fwupd")]
     let http_client = &reqwest::Client::new();
 
     while let Ok(event) = receiver.recv() {
+        trace!("event loop received firmware event: {:?}", event);
         match event {
             FirmwareEvent::Scan => {
                 let sender = &sender;
@@ -203,17 +232,9 @@ pub fn event_loop<F: Fn(FirmwareSignal)>(receiver: Receiver<FirmwareEvent>, send
                 #[cfg(feature = "fwupd")]
                 {
                     if let Some(ref client) = fwupd {
-                        // TODO: fwupd gives an error about an invalid signature. Use this once we
-                        // figure out why       this keeps happening with
-                        // our client. if let Err(why) =
-                        // fwupd_updates(client, http_client) {
-                        //     eprintln!("failed to update fwupd remotes: {}", why);
-                        // }
-
-                        if let Err(why) = fwupdmgr_refresh() {
-                            eprintln!("failed to refresh remotes: {}", why);
+                        if let Err(why) = fwupd_updates(client, http_client) {
+                            eprintln!("failed to update fwupd remotes: {}", why);
                         }
-
                         fwupd_scan(client, sender);
                     }
                 }
@@ -274,23 +295,27 @@ pub fn event_loop<F: Fn(FirmwareSignal)>(receiver: Receiver<FirmwareEvent>, send
                 sender(event);
             }
             FirmwareEvent::Stop => {
-                eprintln!("received quit signal");
+                trace!("received quit signal");
                 break;
             }
         }
     }
 }
 
-fn read_dmi(path: &str) -> io::Result<String> {
+/// Function for getting a timmed string from a file.
+fn read_trimmed(path: &str) -> io::Result<String> {
     let mut vendor = std::fs::read_to_string(path)?;
     vendor.truncate(vendor.trim_end().len());
     Ok(vendor)
 }
 
-fn board_name() -> io::Result<String> { read_dmi("/sys/class/dmi/id/board_name") }
+/// Convenience function for reading the board name from the DMI ID information.
+fn board_name() -> io::Result<String> { read_trimmed("/sys/class/dmi/id/board_name") }
 
-fn board_vendor() -> io::Result<String> { read_dmi("/sys/class/dmi/id/board_vendor") }
+/// Convenience function for reading the board vendor from the DMI ID information.
+fn board_vendor() -> io::Result<String> { read_trimmed("/sys/class/dmi/id/board_vendor") }
 
+/// Creates a string identifying system firmware by the board vendor and name.
 pub(crate) fn system_board_identity() -> io::Result<String> {
     Ok([&*board_vendor()?, " ", &*board_name()?].concat())
 }
@@ -302,23 +327,26 @@ where
     E: std::fmt::Display,
 {
     if is_active() {
-        connect().map_err(|why| eprintln!("{} client error: {}", name, why)).ok()
+        connect().map_err(|why| error!("{} client error: {}", name, why)).ok()
     } else {
         None
     }
 }
 
+/// Checks if a systemd service is active.
 fn systemd_service_is_active(name: &str) -> bool {
     Command::new("systemctl")
         .args(&["-q", "is-active", name])
         .status()
-        .map_err(|why| eprintln!("{}", why))
+        .map_err(|why| error!("{}", why))
         .ok()
         .map_or(false, |status| status.success())
 }
 
-fn lowest_revision<'a, I: Iterator<Item = &'a str>>(mut list: I) -> &'a str {
+/// Finds the lowest revision from anything that is or may become an `Iterator` of strings.
+fn lowest_revision<'a, I: IntoIterator<Item = &'a str>>(list: I) -> &'a str {
     use std::cmp::Ordering;
+    let mut list = list.into_iter();
     match list.next() {
         Some(mut lowest_revision) => {
             for rev in list {
@@ -330,6 +358,18 @@ fn lowest_revision<'a, I: Iterator<Item = &'a str>>(mut list: I) -> &'a str {
         }
         None => "",
     }
+}
+
+/// Helper for formatting errors for logs.
+fn format_error<E: std::error::Error>(why: E) -> String {
+    let mut error_message = format!("{}", why);
+    let mut cause = why.source();
+    while let Some(error) = cause {
+        error_message.push_str(format!(": {}", error).as_str());
+        cause = error.source();
+    }
+
+    error_message
 }
 
 #[cfg(test)]
