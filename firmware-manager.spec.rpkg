@@ -53,7 +53,12 @@ make prefix=/usr libdir=/usr/lib64
 # the installable rpm package.
 %install
 
-make install prefix=/usr libdir=/usr/lib64 DESTDIR=%{buildroot}
+make install-bin prefix=/usr libdir=/usr/lib64 DESTDIR=%{buildroot}
+make install-ffi prefix=/usr libdir=/usr/lib64 DESTDIR=%{buildroot}
+make install-notify prefix=/usr DESTDIR=%{buildroot}
+make install-icons prefix=/usr libdir=/usr/lib64 DESTDIR=%{buildroot}
+
+
 
 # do after installation
 %post
