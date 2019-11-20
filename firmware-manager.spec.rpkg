@@ -27,6 +27,7 @@ BuildRequires: pango-devel
 BuildRequires: atk-devel
 BuildRequires: gtk3-devel
 BuildRequires: xz-devel
+BuildRequires: systemd-rpm-macros
 
 #Packages required to work
 Requires: dbus-common 
@@ -78,8 +79,8 @@ systemctl daemon-reload >/dev/null 2>&1 || :
 # Those files will be in the rpm
 %files
 %{_sysconfdir}/xdg/autostart/com.system76.FirmwareManager.Notify.desktop
-%{_libdir}/systemd/user/com.system76.FirmwareManager.Notify.timer
-%{_libdir}/systemd/user/com.system76.FirmwareManager.Notify.service
+%{_userunitdir}com.system76.FirmwareManager.Notify.timer
+%{_userunitdir}com.system76.FirmwareManager.Notify.service
 %{_libdir}/pkgconfig/firmware_manager.pc
 %{_libdir}/libfirmware_manager.so
 %{_includedir}/firmware_manager.h
