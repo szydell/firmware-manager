@@ -64,7 +64,7 @@ make install-icons prefix=/usr libdir=/usr/lib64 DESTDIR=%{buildroot}
 # do after installation
 %post
 systemctl daemon-reload >/dev/null 2>&1 || :
-echo "To enable firmware updates notification run: systemctl enable com.system76.FirmwareManager.Notify.timer"
+echo "To enable firmware updates notification run: systemctl enable --user com.system76.FirmwareManager.Notify.timer"
 
 # do before uninstallation
 %preun
