@@ -27,7 +27,6 @@ BuildRequires: pango-devel
 BuildRequires: atk-devel
 BuildRequires: gtk3-devel
 BuildRequires: xz-devel
-BuildRequires: systemd-rpm-macros
 
 #Packages required to work
 Requires: dbus-common 
