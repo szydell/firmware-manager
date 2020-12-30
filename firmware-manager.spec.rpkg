@@ -102,7 +102,7 @@ systemctl daemon-reload >/dev/null 2>&1 || :
 %{_datadir}/applications/com.system76.FirmwareManager.desktop
 %{_bindir}/com.system76.FirmwareManager
 %{_bindir}/com.system76.FirmwareManager.Notify
-
+%{_libdir}/libfirmware_manager.so.0
 
 # Changelog
 %changelog
