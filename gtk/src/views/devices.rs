@@ -1,4 +1,4 @@
-use crate::{traits::DynamicGtkResize, widgets::DeviceWidget};
+use crate::{fl, traits::DynamicGtkResize, widgets::DeviceWidget};
 use firmware_manager::FirmwareInfo;
 use gtk::prelude::*;
 use std::num::NonZeroU8;
@@ -12,12 +12,12 @@ use std::num::NonZeroU8;
 #[derive(Shrinkwrap)]
 pub struct DevicesView {
     #[shrinkwrap(main_field)]
-    container: gtk::Container,
+    container:       gtk::Container,
     device_firmware: gtk::ListBox,
-    device_header: gtk::Label,
-    sg: gtk::SizeGroup,
+    device_header:   gtk::Label,
+    sg:              gtk::SizeGroup,
     system_firmware: gtk::ListBox,
-    system_header: gtk::Label,
+    system_header:   gtk::Label,
 }
 
 impl DevicesView {
@@ -91,15 +91,17 @@ impl DevicesView {
             })
         });
 
+        let system_text = format!("<b>{}</b>", fl!("header-system-firmware"));
         let system_header = cascade! {
-            gtk::Label::new("<b>System Firmware</b>".into());
+            gtk::Label::new(Some(&system_text));
             ..set_no_show_all(true);
             ..set_use_markup(true);
             ..set_xalign(0.0);
         };
 
+        let device_text = format!("<b>{}</b>", fl!("header-device-firmware"));
         let device_header = cascade! {
-            gtk::Label::new("<b>Device Firmware</b>".into());
+            gtk::Label::new(Some(&device_text));
             ..set_no_show_all(true);
             ..set_use_markup(true);
             ..set_xalign(0.0);
@@ -145,8 +147,12 @@ impl DevicesView {
 
     /// Clears all device widgets from the system and device list boxes.
     pub fn clear(&self) {
-        self.system_firmware.foreach(|x| unsafe { x.destroy(); });
-        self.device_firmware.foreach(|x| unsafe { x.destroy(); });
+        self.system_firmware.foreach(|x| unsafe {
+            x.destroy();
+        });
+        self.device_firmware.foreach(|x| unsafe {
+            x.destroy();
+        });
     }
 
     /// Creates and attaches a new device widget to the device section.

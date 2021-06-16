@@ -19,10 +19,13 @@ extern crate shrinkwraprs;
 
 mod changelog;
 mod dialogs;
+mod localize;
 mod state;
 mod traits;
 mod views;
 mod widgets;
+
+pub use self::localize::localizer;
 
 use self::{state::State, views::*};
 use firmware_manager::*;
@@ -89,9 +92,6 @@ impl FirmwareWidget {
     /// - This will spawn a background thread to handle non-UI events.
     /// - On drop, the background thread will exit
     pub fn new() -> Self {
-        #[cfg(all(not(feature = "fwupd"), not(feature = "system76")))]
-        compile_error!("must enable one or more of [fwupd system76]");
-
         let (sender, rx) = channel();
 
         let view_devices = DevicesView::new();
@@ -238,10 +238,13 @@ impl FirmwareWidget {
                 Firmware(DeviceFlashing(entity)) => {
                     firmware_flashing.store(true, Ordering::SeqCst);
                     let widget = &state.components.device_widgets[entity];
-                    let message =
-                        if state.entities.is_system(entity) { "Scheduling" } else { "Flashing" };
+                    let message = if state.entities.is_system(entity) {
+                        fl!("action-scheduling")
+                    } else {
+                        fl!("action-flashing")
+                    };
 
-                    widget.stack.switch_to_progress(message);
+                    widget.stack.switch_to_progress(&message);
                     state.progress_activate(&widget.stack.progress);
                 }
                 // An event that occurs when firmware has successfully updated.
@@ -254,7 +257,7 @@ impl FirmwareWidget {
                 Firmware(DownloadBegin(entity, size)) => {
                     let widget = &state.components.device_widgets[entity];
                     state.components.firmware_download.insert(entity, (0, size));
-                    widget.stack.switch_to_progress("Downloading");
+                    widget.stack.switch_to_progress(&fl!("action-downloading"));
                 }
                 // Firmware for a device has finished downloading.
                 Firmware(DownloadComplete(entity)) => {
@@ -293,7 +296,6 @@ impl FirmwareWidget {
                     }
                 }
                 // An event that occurs when fwupd firmware is found.
-                #[cfg(feature = "fwupd")]
                 Firmware(Fwupd(signal)) => state.fwupd(signal),
                 // Begins searching for devices that have firmware upgrade support
                 Firmware(Scanning) => {
@@ -319,10 +321,8 @@ impl FirmwareWidget {
                 // When system firmwmare is successfully scheduled, reboot the system.
                 Firmware(SystemScheduled) => reboot(),
                 // An event that occurs when System76 system firmware has been found.
-                #[cfg(feature = "system76")]
                 Firmware(S76System(info, data)) => state.system76_system(info, data),
                 // An event that occurs when a Thelio I/O board was discovered.
-                #[cfg(feature = "system76")]
                 Firmware(ThelioIo(info, digest)) => state.thelio_io(info, digest),
                 // Schedules the given firmware for an update, and show a dialog if it requires a
                 // reboot.

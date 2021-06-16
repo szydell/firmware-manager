@@ -1,4 +1,4 @@
-use crate::{dialogs::*, views::*, widgets::*, ActivateEvent, Event, UiEvent};
+use crate::{dialogs::*, fl, views::*, widgets::*, ActivateEvent, Event, UiEvent};
 use firmware_manager::*;
 
 use gtk::prelude::*;
@@ -8,33 +8,33 @@ use std::sync::mpsc::Sender;
 /// Manages all state and state interactions with the UI.
 pub(crate) struct State {
     /// Components that have been associated with entities.
-    pub(crate) components: Components,
+    pub(crate) components:      Components,
     /// All devices will be created as an entity here
-    pub(crate) entities: Entities,
+    pub(crate) entities:        Entities,
     /// If this system has a battery.
-    pub(crate) has_battery: bool,
+    pub(crate) has_battery:     bool,
     /// Sends events to the progress signal
     pub(crate) progress_sender: Sender<ActivateEvent>,
     /// A sender to send firmware requests to the background thread
-    pub(crate) sender: Sender<FirmwareEvent>,
+    pub(crate) sender:          Sender<FirmwareEvent>,
     /// Events to be processed by the main event loop
-    pub(crate) ui_sender: glib::Sender<Event>,
+    pub(crate) ui_sender:       glib::Sender<Event>,
     /// Widgets that will be actively managed.
-    pub(crate) widgets: Widgets,
+    pub(crate) widgets:         Widgets,
 }
 
 /// GTK widgets that are interacted with throughout the lifetime of the firmware widget.
 pub(crate) struct Widgets {
     /// Controls the display of error messages.
-    pub(crate) info_bar: gtk::InfoBar,
+    pub(crate) info_bar:       gtk::InfoBar,
     /// Error messages will be set in this label.
     pub(crate) info_bar_label: gtk::Label,
     /// Controls which view to display in the UI
-    pub(crate) stack: gtk::Stack,
+    pub(crate) stack:          gtk::Stack,
     /// The devices view shows a list of all supported devices.
-    pub(crate) view_devices: DevicesView,
+    pub(crate) view_devices:   DevicesView,
     /// The empty view is displayed when a scan found no devices.
-    pub(crate) view_empty: EmptyView,
+    pub(crate) view_empty:     EmptyView,
 }
 
 /// Components are optional pieces of data that are assigned to entities
@@ -50,15 +50,12 @@ pub(crate) struct Components {
     pub(crate) latest: SecondaryMap<Entity, Box<str>>,
 
     /// Details about a fwupd device
-    #[cfg(feature = "fwupd")]
     pub(crate) fwupd: SparseSecondaryMap<Entity, (FwupdDevice, Vec<FwupdRelease>)>,
 
     /// Details about system76 system firmware.
-    #[cfg(feature = "system76")]
     pub(crate) system76: SparseSecondaryMap<Entity, (System76Digest, System76Changelog)>,
 
     /// Details about thelio I/O firmware
-    #[cfg(feature = "system76")]
     pub(crate) thelio: SparseSecondaryMap<Entity, System76Digest>,
 }
 
@@ -121,7 +118,6 @@ impl State {
     }
 
     /// An event that occurs when fwupd firmware is found.
-    #[cfg(feature = "fwupd")]
     pub fn fwupd(&mut self, signal: FwupdSignal) {
         self.create_device(move |state, entity| {
             let FwupdSignal { info, device, upgradeable, releases } = signal;
@@ -174,39 +170,36 @@ impl State {
         let revealer = &widget.revealer;
         let sender = &self.ui_sender;
 
-        #[cfg(feature = "fwupd")]
-        {
-            if let Some((_, releases)) = self.components.fwupd.get(entity) {
-                reveal(revealer, sender, entity, move || {
-                    let releases = &releases;
-                    let log_entries = releases
-                        .iter()
-                        .rev()
-                        .map(|release| (release.version.as_ref(), release.description.as_ref()));
+        if let Some((_, releases)) = self.components.fwupd.get(entity) {
+            reveal(revealer, sender, entity, move || {
+                let releases = &releases;
+                let log_entries = releases
+                    .iter()
+                    .rev()
+                    .map(|release| (release.version.as_ref(), release.description.as_ref()));
 
-                    crate::changelog::generate_widget(log_entries).upcast::<gtk::Container>()
-                });
+                crate::changelog::generate_widget(log_entries).upcast::<gtk::Container>()
+            });
 
-                return;
-            }
+            return;
         }
 
-        #[cfg(feature = "system76")]
-        {
-            if let Some((_, changelog)) = self.components.system76.get(entity) {
-                reveal(revealer, &sender, entity, || {
-                    let log_entries = changelog.versions.iter().map(|version| {
-                        (
-                            version.bios.as_ref(),
-                            version.description.as_ref().map_or("N/A", |desc| desc.as_ref()),
-                        )
-                    });
-
-                    crate::changelog::generate_widget(log_entries).upcast::<gtk::Container>()
+        if let Some((_, changelog)) = self.components.system76.get(entity) {
+            reveal(revealer, &sender, entity, || {
+                let log_entries = changelog.versions.iter().map(|version| {
+                    (
+                        version.bios.as_ref(),
+                        version.description.as_ref().map_or_else(
+                            || fl!("not-applicable"),
+                            |desc| String::from(desc.as_ref()),
+                        ),
+                    )
                 });
 
-                return;
-            }
+                crate::changelog::generate_widget(log_entries).upcast::<gtk::Container>()
+            });
+
+            return;
         }
 
         // When changelog information is not available.
@@ -216,7 +209,6 @@ impl State {
     }
 
     /// An event that occurs when System76 system firmware has been found.
-    #[cfg(feature = "system76")]
     pub fn system76_system(
         &mut self,
         info: FirmwareInfo,
@@ -252,7 +244,6 @@ impl State {
     }
 
     /// An event that occurs when a Thelio I/O board was discovered.
-    #[cfg(feature = "system76")]
     pub fn thelio_io(&mut self, info: FirmwareInfo, digest: Option<System76Digest>) {
         self.create_device(move |state, entity| {
             let widget = state.widgets.view_devices.device(&info);
@@ -293,46 +284,40 @@ impl State {
         if let Some(latest) = self.components.latest.get(entity) {
             let widgets = &self.components.device_widgets[entity];
 
-            #[cfg(feature = "fwupd")]
-            {
-                if let Some((device, releases)) = self.components.fwupd.get(entity) {
-                    let dialog = FwupdDialog {
-                        device: &device,
-                        entity,
-                        has_battery: self.has_battery,
-                        latest: &latest,
-                        needs_reboot: self.entities.is_system(entity),
-                        releases: &releases,
-                        sender: &self.sender,
-                        widgets,
-                    };
+            if let Some((device, releases)) = self.components.fwupd.get(entity) {
+                let dialog = FwupdDialog {
+                    device: &device,
+                    entity,
+                    has_battery: self.has_battery,
+                    latest: &latest,
+                    needs_reboot: self.entities.is_system(entity),
+                    releases: &releases,
+                    sender: &self.sender,
+                    widgets,
+                };
 
-                    dialog.run();
+                dialog.run();
 
-                    return;
-                }
+                return;
             }
 
-            #[cfg(feature = "system76")]
-            {
-                if let Some((digest, changelog)) = self.components.system76.get(entity) {
-                    let dialog = System76Dialog {
-                        changelog: &changelog,
-                        digest: &digest,
-                        entity,
-                        has_battery: self.has_battery,
-                        latest: &latest,
-                        sender: &self.sender,
-                        widgets,
-                    };
+            if let Some((digest, changelog)) = self.components.system76.get(entity) {
+                let dialog = System76Dialog {
+                    changelog: &changelog,
+                    digest: &digest,
+                    entity,
+                    has_battery: self.has_battery,
+                    latest: &latest,
+                    sender: &self.sender,
+                    widgets,
+                };
 
-                    dialog.run();
-                } else if let Some(digest) = self.components.thelio.get(entity) {
-                    // Exchange the button for a progress bar.
-                    widgets.stack.switch_to_waiting();
-                    self.progress_activate(&widgets.stack.progress);
-                    let _ = self.sender.send(FirmwareEvent::ThelioIo(entity, digest.clone()));
-                }
+                dialog.run();
+            } else if let Some(digest) = self.components.thelio.get(entity) {
+                // Exchange the button for a progress bar.
+                widgets.stack.switch_to_waiting();
+                self.progress_activate(&widgets.stack.progress);
+                let _ = self.sender.send(FirmwareEvent::ThelioIo(entity, digest.clone()));
             }
         } else {
             error!("attempted to update firmware for a device which did not have updated firmware");
@@ -358,7 +343,7 @@ fn reveal<F: FnMut() -> gtk::Container>(
                 gtk::Box::new(gtk::Orientation::Vertical, 12);
                 ..set_vexpand(true);
                 ..add(&gtk::Separator::new(gtk::Orientation::Horizontal));
-                ..add(&gtk::LabelBuilder::new().label("<b>Changelog</b>").use_markup(true).xalign(0.0).build());
+                ..add(&gtk::LabelBuilder::new().label(&format!("<b>{}</b>", fl!("changelog"))).use_markup(true).xalign(0.0).build());
                 ..add(&widget);
                 ..show_all();
             };

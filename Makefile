@@ -13,12 +13,6 @@ S76_DEV ?= 0
 
 ARGS = --no-default-features
 
-ifeq ($(S76_DEV),1)
-	features = system76
-else
-	features = fwupd system76
-endif
-
 ifeq ($(DEBUG),0)
 	TARGET = release
 	ARGS += --release
@@ -56,60 +50,32 @@ SOURCES = $(shell find src -type f -name '*.rs') Cargo.toml Cargo.lock \
 FFI_SOURCES = $(shell find gtk/ffi/src -type f -name '*.rs') \
 	gtk/ffi/Cargo.toml gtk/ffi/build.rs gtk/ffi/$(PACKAGE).h
 
-all: toml-gen $(GTKBINARY) $(NOTBINARY) $(LIBRARY) $(PKGCONFIG)
+all: $(GTKBINARY) $(NOTBINARY) $(LIBRARY) $(PKGCONFIG)
 
 clean:
-	rm -rf target
+	cargo clean
 
 distclean: clean
-	rm -rf .cargo vendor vendor.tar.xz
+	rm -rf .cargo vendor vendor.tar
 
 ## Developer tools
 
 clippy:
-	cargo clippy --manifest-path $(GTKPROJ) $(ARGS) --features '$(features)'
-	cargo clippy --manifest-path $(NOTPROJ) $(ARGS) --features '$(features)'
-
-## Generating conditional Cargo configs
-
-toml-gen: toml-gtk  toml-gtk-ffi toml-notify
-
-toml-gtk:
-	cp gtk/Cargo.toml.in gtk/Cargo.toml
-	echo -n 'firmware-manager = { path = "../", default-features = false, features = [ ' >> gtk/Cargo.toml
-	for feature in $(features); do \
-		echo -n "\"$$feature\"," >> gtk/Cargo.toml; \
-	done
-	echo ' ] }' >> gtk/Cargo.toml
-
-toml-gtk-ffi:
-	cp gtk/ffi/Cargo.toml.in gtk/ffi/Cargo.toml
-	echo -n 'firmware-manager-gtk = { path = "../", default-features = false, features = [ ' >> gtk/ffi/Cargo.toml
-	for feature in $(features); do \
-		echo -n "\"$$feature\"," >> gtk/ffi/Cargo.toml; \
-	done
-	echo ' ] }' >> gtk/ffi/Cargo.toml
-
-toml-notify:
-	cp notify/Cargo.toml.in notify/Cargo.toml
-	echo -n 'firmware-manager = { path = "../", default-features = false, features = [ ' >> notify/Cargo.toml
-	for feature in $(features); do \
-		echo -n "\"$$feature\"," >> notify/Cargo.toml; \
-	done
-	echo ' ] }' >> notify/Cargo.toml
+	cargo clippy --manifest-path $(GTKPROJ) $(ARGS)'
+	cargo clippy --manifest-path $(NOTPROJ) $(ARGS)'
 
 ## Building the binaries
 
-bin $(GTKBINARY): toml-gen $(DESKTOP) prepare
-	cargo build --manifest-path $(GTKPROJ) $(ARGS) --features '$(features)'
+bin $(GTKBINARY): $(DESKTOP) vendor-extract
+	cargo build --manifest-path $(GTKPROJ) $(ARGS)
 
-bin-notify $(NOTBINARY): toml-gen $(STARTUP_DESKTOP) prepare
+bin-notify $(NOTBINARY): $(STARTUP_DESKTOP) vendor-extract
 	env APPID=$(NOTIFY_APPID) prefix=$(prefix) \
-		cargo build --manifest-path $(NOTPROJ) $(ARGS) --features '$(features)'
+		cargo build --manifest-path $(NOTPROJ) $(ARGS)
 
 ## Builds the desktop entry in the target directory.
 
-desktop $(DESKTOP): prepare
+desktop $(DESKTOP): vendor-extract
 	cargo run -p tools --bin desktop-entry $(DESKTOP_ARGS) -- \
 		--appid $(APPID) \
 		--name "Firmware Manager" \
@@ -125,7 +91,7 @@ desktop $(DESKTOP): prepare
 		--prefix $(prefix) \
 		--startup-notify
 
-notify-desktop $(STARTUP_DESKTOP): prepare
+notify-desktop $(STARTUP_DESKTOP): vendor-extract
 	cargo run -p tools --bin desktop-entry $(DESKTOP_ARGS) -- \
 		--appid $(NOTIFY_APPID) \
 		--name "Firmware Manager Check" \
@@ -139,7 +105,7 @@ notify-desktop $(STARTUP_DESKTOP): prepare
 
 ffi: $(LIBRARY) $(PKGCONFIG)
 
-$(LIBRARY): $(SOURCES) $(FFI_SOURCES) prepare
+$(LIBRARY): $(SOURCES) $(FFI_SOURCES) vendor-extract
 	cargo build --manifest-path $(GTKFFIPROJ) $(ARGS)
 
 ## Builds the pkg-config file necessary to locate the library.
@@ -175,10 +141,6 @@ install-icons:
 		cp -v $$icon $$dest; \
 	done
 
-## Pre-build preparation
-
-prepare: vendor-check
-
 ## Uninstall Commands
 
 uninstall: uninstall-bin uninstall-ffi
@@ -193,8 +155,9 @@ uninstall-ffi:
 
 ## Cargo Vendoring
 
-vendor:
-	rm .cargo -rf
+vendor: vendor.tar
+
+vendor.tar:
 	mkdir -p .cargo
 	cargo vendor \
 		--sync gtk/Cargo.toml \
@@ -203,10 +166,10 @@ vendor:
 		--sync tools/Cargo.toml \
 		| head -n -1 > .cargo/config
 	echo 'directory = "vendor"' >> .cargo/config
-	tar cf vendor.tar vendor
+	tar pcf vendor.tar vendor
 	rm -rf vendor
 
-vendor-check:
+vendor-extract:
 ifeq ($(VENDOR),1)
-	rm vendor -rf && tar xf vendor.tar
+	tar pxf vendor.tar
 endif
