@@ -27,6 +27,9 @@ BuildRequires: pango-devel
 BuildRequires: atk-devel
 BuildRequires: gtk3-devel
 BuildRequires: xz-devel
+BuildRequires: libXrandr-devel
+BuildRequires: libXcursor-devel
+BuildRequires: libXcomposite-devel
 
 #Packages required to work
 Requires: dbus-common 
