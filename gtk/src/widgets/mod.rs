@@ -5,10 +5,10 @@ use gtk::prelude::*;
 #[derive(Shrinkwrap)]
 pub struct DeviceWidgetStack {
     #[shrinkwrap(main_field)]
-    pub stack:    gtk::Stack,
-    pub button:   gtk::Button,
+    pub stack: gtk::Stack,
+    pub button: gtk::Button,
     pub progress: gtk::ProgressBar,
-    pub waiting:  gtk::Label,
+    pub waiting: gtk::Label,
 }
 
 impl DeviceWidgetStack {
@@ -33,9 +33,9 @@ pub struct DeviceWidget {
     #[shrinkwrap(main_field)]
     pub container: gtk::Container,
     pub event_box: gtk::EventBox,
-    pub revealer:  gtk::Revealer,
-    pub label:     gtk::Label,
-    pub stack:     DeviceWidgetStack,
+    pub revealer: gtk::Revealer,
+    pub label: gtk::Label,
+    pub stack: DeviceWidgetStack,
 }
 
 impl DeviceWidget {
@@ -53,7 +53,7 @@ impl DeviceWidget {
                 .xalign(0.0)
                 .valign(gtk::Align::Start)
                 .build();
-            ..get_style_context().add_class(&gtk::STYLE_CLASS_DIM_LABEL);
+            ..style_context().add_class(&gtk::STYLE_CLASS_DIM_LABEL);
         };
 
         let button = cascade! {
@@ -63,7 +63,7 @@ impl DeviceWidget {
                 .hexpand(true)
                 .vexpand(true)
                 .build();
-            ..get_style_context().add_class(&gtk::STYLE_CLASS_SUGGESTED_ACTION);
+            ..style_context().add_class(&gtk::STYLE_CLASS_SUGGESTED_ACTION);
         };
 
         let progress = cascade! {
@@ -96,11 +96,11 @@ impl DeviceWidget {
         let dropdown_image_ = dropdown_image.downgrade();
         let revealer = cascade! {
             gtk::Revealer::new();
-            ..connect_property_reveal_child_notify(move |revealer| {
+            ..connect_reveal_child_notify(move |revealer| {
                 dropdown_image_.upgrade()
                     .expect("dropdown image did not exist")
                     .set_from_icon_name(
-                        Some(if revealer.get_reveal_child() {
+                        Some(if revealer.reveals_child() {
                             "pan-down-symbolic"
                         } else {
                             "pan-end-symbolic"
