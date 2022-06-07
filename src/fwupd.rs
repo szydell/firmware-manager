@@ -2,7 +2,7 @@
 
 use crate::{FirmwareInfo, FirmwareSignal};
 use fwupd_dbus::{Client as FwupdClient, Device as FwupdDevice, Release as FwupdRelease};
-use std::cmp::Ordering;
+use std::{cmp::Ordering, sync::mpsc::Sender};
 
 /// A signal sent when a fwupd-compatible device has been discovered.
 #[derive(Debug)]
@@ -18,37 +18,23 @@ pub struct FwupdSignal {
 }
 
 /// Scan for supported devices from the fwupd DBus daemon.
-pub fn fwupd_scan<F: Fn(FirmwareSignal)>(fwupd: &FwupdClient, sender: F) {
+pub fn fwupd_scan(fwupd: &FwupdClient, sender: Sender<FirmwareSignal>) {
     info!("scanning fwupd devices");
 
     let devices = match fwupd.devices() {
         Ok(devices) => devices,
         Err(why) => {
-            sender(FirmwareSignal::Error(None, why.into()));
+            let _res = sender.send(FirmwareSignal::Error(None, why.into()));
             return;
         }
     };
 
     for device in devices {
         if device.is_supported() {
-            match fwupd.releases(&device) {
+            let releases = match fwupd.releases(&device) {
                 Ok(mut releases) => {
                     crate::sort_versions(&mut releases);
-
-                    let latest = releases.iter().last().expect("no releases");
-                    let upgradeable = is_newer(&device.version, &latest.version);
-
-                    sender(FirmwareSignal::Fwupd(FwupdSignal {
-                        info: FirmwareInfo {
-                            name: [&device.vendor, " ", &device.name].concat().into(),
-                            current: device.version.clone(),
-                            latest: Some(latest.version.clone()),
-                            install_duration: latest.install_duration,
-                        },
-                        device,
-                        upgradeable,
-                        releases,
-                    }));
+                    releases
                 }
                 Err(why) => {
                     error!(
@@ -56,8 +42,30 @@ pub fn fwupd_scan<F: Fn(FirmwareSignal)>(fwupd: &FwupdClient, sender: F) {
                         device.name,
                         super::format_error(why)
                     );
+
+                    Vec::new()
                 }
-            }
+            };
+
+            let latest = releases.iter().last();
+            let upgradeable = latest.map_or(false, |latest| {
+                is_newer(&device.version, &latest.version)
+            });
+            let install_duration = latest.map_or(0, |latest| {
+                latest.install_duration
+            });
+
+            let _res = sender.send(FirmwareSignal::Fwupd(FwupdSignal {
+                info: FirmwareInfo {
+                    name: [&device.vendor, " ", &device.name].concat().into(),
+                    current: device.version.clone(),
+                    latest: latest.map(|latest| latest.version.clone()),
+                    install_duration,
+                },
+                device,
+                upgradeable,
+                releases,
+            }));
         }
     }
 
